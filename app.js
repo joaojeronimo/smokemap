@@ -117,12 +117,18 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function registerUIEvents() {
-        // Toggle Overlay Mode: Worst vs Current
+        // Toggle Overlay Mode: Worst vs Current vs Annual vs Worst Day
         document.getElementById('mode-worst').addEventListener('click', (e) => {
             switchMode('worst');
         });
         document.getElementById('mode-current').addEventListener('click', (e) => {
             switchMode('current');
+        });
+        document.getElementById('mode-annual').addEventListener('click', (e) => {
+            switchMode('annual');
+        });
+        document.getElementById('mode-worst-day').addEventListener('click', (e) => {
+            switchMode('worst_day');
         });
 
         // Toggle Map Style: Dark vs Light
@@ -232,6 +238,8 @@ document.addEventListener('DOMContentLoaded', () => {
         
         document.getElementById('mode-worst').classList.toggle('active', mode === 'worst');
         document.getElementById('mode-current').classList.toggle('active', mode === 'current');
+        document.getElementById('mode-annual').classList.toggle('active', mode === 'annual');
+        document.getElementById('mode-worst-day').classList.toggle('active', mode === 'worst_day');
         
         // Re-render cell colors on the map
         Object.values(state.gridCells).forEach(cell => {
@@ -246,6 +254,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (state.selectedCell) {
             updateDrawerUI(state.selectedCell.data, state.selectedCell.latCenter, state.selectedCell.lngCenter);
         }
+
+        // Trigger grid update in case viewport cells need historical data loaded
+        updateGrid();
     }
 
     // --- Map Style Toggle ---
@@ -545,7 +556,23 @@ document.addEventListener('DOMContentLoaded', () => {
         // 1. Instantly render numeric stats
         updateDrawerUI(data, latCenter, lngCenter);
 
-        // 2. Perform background geocoding request to find name of clicked place
+        // 2. If historical data is not cached, fetch it in background
+        if (data.annual_avg_pm2_5 === undefined) {
+            setHistoricalLoadingState();
+            try {
+                await fetchBatchHistoricalAirQuality([{ key, lat: latCenter, lng: lngCenter }]);
+                const updatedCached = state.cache[key];
+                if (updatedCached && state.selectedCell && state.selectedCell.key === key) {
+                    state.selectedCell.data = updatedCached.data;
+                    updateDrawerUI(updatedCached.data, latCenter, lngCenter);
+                }
+            } catch (err) {
+                console.error('Failed to load historical data for selected cell:', err);
+                setHistoricalErrorState();
+            }
+        }
+
+        // 3. Perform background geocoding request to find name of clicked place
         try {
             const placeName = await reverseGeocode(latCenter, lngCenter);
             document.getElementById('location-name').textContent = placeName;
@@ -612,72 +639,174 @@ document.addEventListener('DOMContentLoaded', () => {
     async function fetchBatchAirQuality(queue) {
         if (queue.length === 0) return;
 
-        // Group batch coordinates
+        const latitudes = queue.map(q => q.lat).join(',');
+        const longitudes = queue.map(q => q.lng).join(',');
+        const now = Date.now();
+
+        const needHistory = (state.selectedMode === 'annual' || state.selectedMode === 'worst_day');
+        const promises = [];
+
+        // 1. Fetch Forecast
+        const fetchForecast = async () => {
+            try {
+                const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${latitudes}&longitude=${longitudes}&current=pm2_5&hourly=pm2_5&timezone=auto`;
+                const response = await fetch(url);
+                if (!response.ok) throw new Error('Open-Meteo Air Quality batch request failed');
+                
+                const results = await response.json();
+                const resultsArray = Array.isArray(results) ? results : [results];
+
+                resultsArray.forEach((item, index) => {
+                    const targetKey = queue[index].key;
+                    const hourly = item.hourly;
+                    let worstPm25 = 0;
+                    let worstTimeIndex = 0;
+
+                    if (hourly && hourly.pm2_5) {
+                        const maxScanHours = Math.min(48, hourly.pm2_5.length);
+                        for (let i = 0; i < maxScanHours; i++) {
+                            if (hourly.pm2_5[i] > worstPm25) {
+                                worstPm25 = hourly.pm2_5[i];
+                                worstTimeIndex = i;
+                            }
+                        }
+                    }
+
+                    const existingData = state.cache[targetKey] ? state.cache[targetKey].data : {};
+                    state.cache[targetKey] = {
+                        timestamp: now,
+                        data: {
+                            ...existingData,
+                            current_pm2_5: item.current ? item.current.pm2_5 : (hourly ? hourly.pm2_5[0] : 0),
+                            worst_pm2_5: worstPm25,
+                            worst_time: hourly ? hourly.time[worstTimeIndex] : '--:--',
+                            hourly_times: hourly ? hourly.time.slice(0, 48) : [],
+                            hourly_pm25: hourly ? hourly.pm2_5.slice(0, 48) : []
+                        }
+                    };
+                });
+            } catch (e) {
+                console.error('Error fetching air quality forecast:', e);
+            }
+        };
+        promises.push(fetchForecast());
+
+        // 2. Fetch History in Parallel if needed
+        if (needHistory) {
+            promises.push(fetchBatchHistoricalAirQuality(queue));
+        }
+
+        await Promise.all(promises);
+
+        // Persist to LocalStorage
+        try {
+            localStorage.setItem('smokemap_aqi_cache', JSON.stringify(state.cache));
+        } catch (e) {
+            console.error('Failed to save cache to localStorage:', e);
+        }
+    }
+
+    async function fetchBatchHistoricalAirQuality(queue) {
+        if (queue.length === 0) return;
+
         const latitudes = queue.map(q => q.lat).join(',');
         const longitudes = queue.map(q => q.lng).join(',');
 
         try {
-            const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${latitudes}&longitude=${longitudes}&current=pm2_5&hourly=pm2_5&timezone=auto`;
+            const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${latitudes}&longitude=${longitudes}&start_date=2025-01-01&end_date=2025-12-31&hourly=pm2_5&timezone=auto`;
             const response = await fetch(url);
-            
-            if (!response.ok) throw new Error('Open-Meteo Air Quality batch request failed');
+            if (!response.ok) throw new Error('Open-Meteo Air Quality historical batch request failed');
 
             const results = await response.json();
-            
-            // If we queried a single coordinate, Open-Meteo returns a JSON object.
-            // If multiple coordinates are queried, it returns a JSON array.
             const resultsArray = Array.isArray(results) ? results : [results];
 
-            // Store in Cache
-            const now = Date.now();
             resultsArray.forEach((item, index) => {
                 const targetKey = queue[index].key;
-                
-                // Parse metrics
                 const hourly = item.hourly;
-                let worstPm25 = 0;
-                let worstTimeIndex = 0;
 
-                // Find the worst hour in the forecast (next 48h)
                 if (hourly && hourly.pm2_5) {
-                    // Open-Meteo returns a list of 120+ hours. We only scan the upcoming 48 hours.
-                    const maxScanHours = Math.min(48, hourly.pm2_5.length);
-                    for (let i = 0; i < maxScanHours; i++) {
-                        if (hourly.pm2_5[i] > worstPm25) {
-                            worstPm25 = hourly.pm2_5[i];
-                            worstTimeIndex = i;
+                    const validPm25 = hourly.pm2_5.filter(val => val !== null && val !== undefined);
+                    const annualAvg = validPm25.length > 0 ? (validPm25.reduce((a, b) => a + b, 0) / validPm25.length) : 0;
+
+                    // Group by date to find the worst day
+                    const dailyValues = {};
+                    for (let i = 0; i < hourly.time.length; i++) {
+                        const timeStr = hourly.time[i];
+                        const val = hourly.pm2_5[i];
+                        if (val === null || val === undefined) continue;
+                        const dateStr = timeStr.substring(0, 10);
+                        if (!dailyValues[dateStr]) {
+                            dailyValues[dateStr] = [];
                         }
+                        dailyValues[dateStr].push(val);
                     }
+
+                    let worstDayDate = '--';
+                    let worstDayPm25 = 0;
+                    Object.keys(dailyValues).forEach(dateStr => {
+                        const vals = dailyValues[dateStr];
+                        const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+                        if (avg > worstDayPm25) {
+                            worstDayPm25 = avg;
+                            worstDayDate = dateStr;
+                        }
+                    });
+
+                    // Ensure cache entry structure exists
+                    if (!state.cache[targetKey]) {
+                        state.cache[targetKey] = { timestamp: Date.now(), data: {} };
+                    }
+
+                    state.cache[targetKey].data.annual_avg_pm2_5 = annualAvg;
+                    state.cache[targetKey].data.worst_day_pm2_5 = worstDayPm25;
+                    state.cache[targetKey].data.worst_day_date = worstDayDate;
                 }
-
-                state.cache[targetKey] = {
-                    timestamp: now,
-                    data: {
-                        current_pm2_5: item.current ? item.current.pm2_5 : (hourly ? hourly.pm2_5[0] : 0),
-                        worst_pm2_5: worstPm25,
-                        worst_time: hourly ? hourly.time[worstTimeIndex] : '--:--',
-                        hourly_times: hourly ? hourly.time.slice(0, 48) : [],
-                        hourly_pm25: hourly ? hourly.pm2_5.slice(0, 48) : []
-                    }
-                };
             });
-
-            // Persist to LocalStorage
-            try {
-                localStorage.setItem('smokemap_aqi_cache', JSON.stringify(state.cache));
-            } catch (e) {
-                console.error('Failed to save cache to localStorage:', e);
-            }
-
         } catch (e) {
-            console.error('Error fetching air quality data:', e);
+            console.error('Error fetching historical air quality data:', e);
         }
+    }
+
+    function setHistoricalLoadingState() {
+        const histAnnualAvgVal = document.getElementById('hist-annual-avg');
+        const histAnnualPmVal = document.getElementById('hist-annual-pm');
+        const histWorstDayVal = document.getElementById('hist-worst-day');
+        const histWorstDayDate = document.getElementById('hist-worst-day-date');
+        
+        if (histAnnualAvgVal) histAnnualAvgVal.textContent = 'Loading...';
+        if (histAnnualPmVal) histAnnualPmVal.textContent = 'Fetching data...';
+        if (histWorstDayVal) histWorstDayVal.textContent = 'Loading...';
+        if (histWorstDayDate) histWorstDayDate.textContent = 'Please wait...';
+    }
+
+    function setHistoricalErrorState() {
+        const histAnnualAvgVal = document.getElementById('hist-annual-avg');
+        const histAnnualPmVal = document.getElementById('hist-annual-pm');
+        const histWorstDayVal = document.getElementById('hist-worst-day');
+        const histWorstDayDate = document.getElementById('hist-worst-day-date');
+        
+        if (histAnnualAvgVal) histAnnualAvgVal.textContent = 'Error';
+        if (histAnnualPmVal) histAnnualPmVal.textContent = 'Failed to load';
+        if (histWorstDayVal) histWorstDayVal.textContent = 'Error';
+        if (histWorstDayDate) histWorstDayDate.textContent = 'Retry later';
     }
 
     // --- Cigarette Calculations & Color Scale ---
     function getCellColorStyle(data) {
         // Choose base PM2.5 value depending on mode
-        const val = state.selectedMode === 'worst' ? data.worst_pm2_5 : data.current_pm2_5;
+        let val;
+        if (state.selectedMode === 'worst') {
+            val = data.worst_pm2_5;
+        } else if (state.selectedMode === 'current') {
+            val = data.current_pm2_5;
+        } else if (state.selectedMode === 'annual') {
+            val = data.annual_avg_pm2_5 !== undefined ? data.annual_avg_pm2_5 : 0;
+        } else if (state.selectedMode === 'worst_day') {
+            val = data.worst_day_pm2_5 !== undefined ? data.worst_day_pm2_5 : 0;
+        } else {
+            val = data.current_pm2_5;
+        }
+        
         const cigCount = val / BERKELEY_EARTH_PM25_FACTOR;
 
         // Colors mapping to custom styling values
@@ -703,12 +832,41 @@ document.addEventListener('DOMContentLoaded', () => {
         const currentCig = data.current_pm2_5 / BERKELEY_EARTH_PM25_FACTOR;
         const worstCig = data.worst_pm2_5 / BERKELEY_EARTH_PM25_FACTOR;
 
-        // Choose primary metric based on mode selected
-        const primaryCig = state.selectedMode === 'worst' ? worstCig : currentCig;
-        const primaryPm25 = state.selectedMode === 'worst' ? data.worst_pm2_5 : data.current_pm2_5;
+        // Choose primary metric and description based on mode selected
+        let primaryCig, primaryPm25, modeDescription;
+        if (state.selectedMode === 'worst') {
+            primaryPm25 = data.worst_pm2_5;
+            primaryCig = primaryPm25 / BERKELEY_EARTH_PM25_FACTOR;
+            modeDescription = 'equivalent inhaled at worst forecasted hour';
+        } else if (state.selectedMode === 'current') {
+            primaryPm25 = data.current_pm2_5;
+            primaryCig = primaryPm25 / BERKELEY_EARTH_PM25_FACTOR;
+            modeDescription = 'equivalent inhaled per 24 hours (current)';
+        } else if (state.selectedMode === 'annual') {
+            primaryPm25 = data.annual_avg_pm2_5 !== undefined ? data.annual_avg_pm2_5 : 0;
+            primaryCig = primaryPm25 / BERKELEY_EARTH_PM25_FACTOR;
+            modeDescription = 'equivalent inhaled per 24 hours (2025 average)';
+        } else if (state.selectedMode === 'worst_day') {
+            primaryPm25 = data.worst_day_pm2_5 !== undefined ? data.worst_day_pm2_5 : 0;
+            primaryCig = primaryPm25 / BERKELEY_EARTH_PM25_FACTOR;
+            let formattedDate = '';
+            if (data.worst_day_date) {
+                try {
+                    const dateObj = new Date(data.worst_day_date);
+                    formattedDate = dateObj.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+                } catch (e) {
+                    formattedDate = data.worst_day_date;
+                }
+            }
+            modeDescription = `inhaled on worst day of 2025 (${formattedDate || 'date N/A'})`;
+        }
 
         // Set Main Cigarette Count
         document.getElementById('cig-count-value').textContent = primaryCig.toFixed(1);
+        
+        // Update Description Label
+        const descLabel = document.getElementById('stat-description-label');
+        if (descLabel) descLabel.textContent = modeDescription;
         
         // Set Worst Cigarette Count
         document.getElementById('worst-cig-value').textContent = worstCig.toFixed(1);
@@ -761,6 +919,39 @@ document.addEventListener('DOMContentLoaded', () => {
         // Interactive Equivalence Text
         const adviceContainer = document.getElementById('cigarette-equivalence-text');
         adviceContainer.textContent = getEquivalenceText(primaryCig, primaryPm25);
+
+        // Update Historical Section cards in drawer
+        const histAnnualAvgVal = document.getElementById('hist-annual-avg');
+        const histAnnualPmVal = document.getElementById('hist-annual-pm');
+        const histWorstDayVal = document.getElementById('hist-worst-day');
+        const histWorstDayDate = document.getElementById('hist-worst-day-date');
+
+        if (histAnnualAvgVal && histAnnualPmVal && histWorstDayVal && histWorstDayDate) {
+            if (data.annual_avg_pm2_5 !== undefined) {
+                const annualCig = data.annual_avg_pm2_5 / BERKELEY_EARTH_PM25_FACTOR;
+                histAnnualAvgVal.textContent = `${annualCig.toFixed(1)} cig`;
+                histAnnualPmVal.textContent = `${Math.round(data.annual_avg_pm2_5)} μg/m³ PM2.5`;
+                
+                const worstDayCig = data.worst_day_pm2_5 / BERKELEY_EARTH_PM25_FACTOR;
+                histWorstDayVal.textContent = `${worstDayCig.toFixed(1)} cig`;
+                
+                let formattedWorstDate = '--';
+                if (data.worst_day_date) {
+                    try {
+                        const dateObj = new Date(data.worst_day_date);
+                        formattedWorstDate = dateObj.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+                    } catch (e) {
+                        formattedWorstDate = data.worst_day_date;
+                    }
+                }
+                histWorstDayDate.textContent = `on ${formattedWorstDate}`;
+            } else {
+                histAnnualAvgVal.textContent = 'Loading...';
+                histAnnualPmVal.textContent = '-- μg/m³ PM2.5';
+                histWorstDayVal.textContent = 'Loading...';
+                histWorstDayDate.textContent = '--';
+            }
+        }
 
         // Render Dynamic Forecast Chart
         renderForecastSVGChart(data);
@@ -941,7 +1132,16 @@ document.addEventListener('DOMContentLoaded', () => {
     function isCacheValid(key) {
         const cachedItem = state.cache[key];
         if (!cachedItem) return false;
-        return (Date.now() - cachedItem.timestamp) < state.cacheTTL;
+        
+        const isForecastValid = (Date.now() - cachedItem.timestamp) < state.cacheTTL;
+        
+        // If in historical mode, we also require historical data to be present
+        if (state.selectedMode === 'annual' || state.selectedMode === 'worst_day') {
+            const hasHistory = cachedItem.data.annual_avg_pm2_5 !== undefined && cachedItem.data.worst_day_pm2_5 !== undefined;
+            return isForecastValid && hasHistory;
+        }
+        
+        return isForecastValid;
     }
 
     function cleanExpiredCache() {

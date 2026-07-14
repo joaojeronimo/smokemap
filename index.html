@@ -65,6 +65,12 @@
                 <button id="mode-current" class="toggle-btn" data-mode="current">
                     <i data-lucide="clock" class="btn-icon"></i> Current
                 </button>
+                <button id="mode-annual" class="toggle-btn" data-mode="annual">
+                    <i data-lucide="calendar" class="btn-icon"></i> Annual Average
+                </button>
+                <button id="mode-worst-day" class="toggle-btn" data-mode="worst_day">
+                    <i data-lucide="calendar-x" class="btn-icon"></i> Worst Day
+                </button>
             </div>
         </div>
         
@@ -135,7 +141,7 @@
                             <span id="cig-count-value" class="stat-value">0.0</span>
                             <span class="stat-unit">cigarettes</span>
                         </div>
-                        <p class="stat-description">equivalent inhaled per 24 hours</p>
+                        <p id="stat-description-label" class="stat-description">equivalent inhaled per 24 hours</p>
                     </div>
                     
                     <div class="stat-divider"></div>
@@ -168,6 +174,23 @@
                         <div class="timeline-card">
                             <span class="time-label">1 Year Exposure</span>
                             <span id="time-1y" class="time-value">0.0 cig</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Historical Context (2025) -->
+                <section class="drawer-section historical-section">
+                    <h3>2025 Historical Context</h3>
+                    <div class="historical-grid">
+                        <div class="historical-card">
+                            <span class="historical-label">Annual Average</span>
+                            <span id="hist-annual-avg" class="historical-value">Loading...</span>
+                            <span id="hist-annual-pm" class="historical-subtext">-- μg/m³ PM2.5</span>
+                        </div>
+                        <div class="historical-card">
+                            <span class="historical-label">Worst Day of Year</span>
+                            <span id="hist-worst-day" class="historical-value">Loading...</span>
+                            <span id="hist-worst-day-date" class="historical-subtext">--</span>
                         </div>
                     </div>
                 </section>
@@ -225,6 +248,8 @@
             <ul>
                 <li><strong>Worst Hour:</strong> Displays the grid color-coded by the <em>maximum</em> hourly PM2.5 level predicted or recorded in the current 48-hour cycle. Since air pollution spikes at specific hours (e.g. rush hours or evenings), this highlights peak exposure risk.</li>
                 <li><strong>Current:</strong> Displays real-time air quality levels.</li>
+                <li><strong>Annual Average (2025):</strong> Displays the grid color-coded by the average PM2.5 level across the entire year of 2025, highlighting long-term baseline exposure.</li>
+                <li><strong>Worst Day (2025):</strong> Displays the grid color-coded by the average PM2.5 level on the worst single day (highest 24h average) of 2025, highlighting extreme historical events.</li>
             </ul>
 
             <h3>Data Sources</h3>
