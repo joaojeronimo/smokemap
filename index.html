@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>SmokeMap — Air Quality to Cigarette Overlay</title>
+    
+    <!-- Meta tags for SEO & Previews -->
+    <meta name="description" content="Visualise air quality (PM2.5) as the equivalent number of cigarettes smoked per day. Search any location, explore the interactive map, and view worst-hour forecasts.">
+    <meta property="og:title" content="SmokeMap — Air Quality to Cigarette Overlay">
+    <meta property="og:description" content="Explore how many cigarettes you smoke just by breathing the air in your city. Live map overlay with PM2.5-to-cigarette conversion.">
+    <meta property="og:type" content="website">
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Leaflet.js CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    
+    <!-- App Stylesheet -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Fullscreen Map Container -->
+    <div id="map"></div>
+
+    <!-- Floating Search & Header Bar -->
+    <header class="glass-panel main-header animate-fade-in">
+        <div class="brand">
+            <div class="logo-wrapper">
+                <i data-lucide="cigar" class="logo-icon"></i>
+            </div>
+            <div class="brand-text">
+                <h1>SmokeMap</h1>
+                <span class="tagline">Air Quality as Cigarettes</span>
+            </div>
+        </div>
+        
+        <div class="search-container">
+            <div class="search-input-wrapper">
+                <i data-lucide="search" class="search-icon"></i>
+                <input type="text" id="search-input" placeholder="Search city or location..." autocomplete="off">
+                <button id="clear-search" class="clear-btn hidden" aria-label="Clear search">
+                    <i data-lucide="x" class="btn-icon"></i>
+                </button>
+            </div>
+            <div id="search-results" class="search-results-panel glass-panel hidden"></div>
+        </div>
+        
+        <button id="locate-btn" class="icon-btn" title="Find my location" aria-label="Locate me">
+            <i data-lucide="map-pin"></i>
+        </button>
+    </header>
+
+    <!-- Floating Settings Control -->
+    <div class="glass-panel map-controls animate-fade-in">
+        <div class="control-section">
+            <span class="control-label">Overlay Mode</span>
+            <div class="button-group">
+                <button id="mode-worst" class="toggle-btn active" data-mode="worst">
+                    <i data-lucide="flame" class="btn-icon"></i> Worst Hour
+                </button>
+                <button id="mode-current" class="toggle-btn" data-mode="current">
+                    <i data-lucide="clock" class="btn-icon"></i> Current
+                </button>
+            </div>
+        </div>
+        
+        <div class="control-divider"></div>
+        
+        <div class="control-section">
+            <span class="control-label">Map Style</span>
+            <div class="button-group">
+                <button id="style-dark" class="toggle-btn active" data-style="dark">
+                    <i data-lucide="moon" class="btn-icon"></i> Dark
+                </button>
+                <button id="style-light" class="toggle-btn" data-style="light">
+                    <i data-lucide="sun" class="btn-icon"></i> Light
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Map Legend -->
+    <div class="glass-panel legend-panel animate-fade-in">
+        <div class="legend-header">
+            <h3>Cigarettes / 24h</h3>
+            <button id="legend-info-btn" class="small-info-btn" aria-label="Information">
+                <i data-lucide="info"></i>
+            </button>
+        </div>
+        <div class="legend-gradient-wrapper">
+            <div class="legend-gradient"></div>
+            <div class="legend-labels">
+                <span>0</span>
+                <span>0.5</span>
+                <span>1.5</span>
+                <span>3.0</span>
+                <span>5.0+</span>
+            </div>
+        </div>
+        <div class="legend-footer">
+            1 cigarette ≈ 22 μg/m³ PM2.5 (Berkeley Earth)
+        </div>
+    </div>
+
+    <!-- Main Detail Drawer (Slides up on Mobile, Floating Sidebar on Desktop) -->
+    <div id="detail-drawer" class="detail-drawer glass-panel">
+        <div class="drawer-drag-handle">
+            <div class="handle-bar"></div>
+        </div>
+        
+        <button id="close-drawer" class="close-drawer-btn" aria-label="Close details">
+            <i data-lucide="x"></i>
+        </button>
+        
+        <div class="drawer-content">
+            <header class="drawer-header">
+                <div class="drawer-header-left">
+                    <h2 id="location-name">Selected Area</h2>
+                    <p id="location-coords" class="subtle-text">Loading coordinates...</p>
+                </div>
+                <div id="drawer-aqi-badge" class="aqi-badge bg-clean">
+                    <span id="aqi-text">Good</span>
+                </div>
+            </header>
+
+            <div class="drawer-body">
+                <!-- Large Stats Display -->
+                <div class="stats-hero">
+                    <div class="stat-group">
+                        <div class="stat-value-container">
+                            <span id="cig-count-value" class="stat-value">0.0</span>
+                            <span class="stat-unit">cigarettes</span>
+                        </div>
+                        <p class="stat-description">equivalent inhaled per 24 hours</p>
+                    </div>
+                    
+                    <div class="stat-divider"></div>
+                    
+                    <div class="stat-group secondary-stat">
+                        <div class="stat-value-container small-stat">
+                            <span id="worst-cig-value" class="stat-value">0.0</span>
+                            <span class="stat-unit">cig/day rate</span>
+                        </div>
+                        <p class="stat-description">at worst forecasted time (<span id="worst-time-label">--:--</span>)</p>
+                    </div>
+                </div>
+
+                <!-- Exposure Comparisons -->
+                <section class="drawer-section">
+                    <h3>Exposure Timeline</h3>
+                    <div class="timeline-grid">
+                        <div class="timeline-card">
+                            <span class="time-label">1 Hour Exposure</span>
+                            <span id="time-1h" class="time-value">0.00 cig</span>
+                        </div>
+                        <div class="timeline-card">
+                            <span class="time-label">1 Week Exposure</span>
+                            <span id="time-1w" class="time-value">0.0 cig</span>
+                        </div>
+                        <div class="timeline-card">
+                            <span class="time-label">1 Month Exposure</span>
+                            <span id="time-1m" class="time-value">0.0 cig</span>
+                        </div>
+                        <div class="timeline-card">
+                            <span class="time-label">1 Year Exposure</span>
+                            <span id="time-1y" class="time-value">0.0 cig</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Comparison Cards (Dynamic based on cigarette count) -->
+                <section class="drawer-section">
+                    <h3>What this means</h3>
+                    <div class="info-alert" id="cigarette-equivalence-text">
+                        Breathing the air here for 24 hours poses a similar mortality risk to smoking X cigarettes.
+                    </div>
+                </section>
+
+                <!-- 48-Hour Cigarette Forecast Chart -->
+                <section class="drawer-section chart-section">
+                    <div class="section-header">
+                        <h3>Cigarette Rate Trend (48h)</h3>
+                        <span class="chart-legend"><span class="chart-dot"></span> Cigarettes/day rate</span>
+                    </div>
+                    <div class="chart-container">
+                        <svg id="forecast-chart" viewBox="0 0 500 160" preserveAspectRatio="none">
+                            <!-- Chart elements generated dynamically -->
+                        </svg>
+                        <div class="chart-time-labels">
+                            <span id="chart-start-time">Now</span>
+                            <span id="chart-mid-time">Tomorrow</span>
+                            <span id="chart-end-time">+48h</span>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </div>
+
+    <!-- Info Modal (Explanation of PM2.5 to Cigarette relation) -->
+    <dialog id="info-modal" class="glass-panel modal-dialog">
+        <div class="modal-header">
+            <h2>About SmokeMap</h2>
+            <button id="close-modal" class="icon-btn" aria-label="Close modal">
+                <i data-lucide="x"></i>
+            </button>
+        </div>
+        <div class="modal-body">
+            <p><strong>SmokeMap</strong> translates technical air quality measurements into a familiar metric: <strong>cigarettes</strong>.</p>
+            
+            <h3>The Science</h3>
+            <p>This conversion is based on a widely cited study by researchers Richard A. Muller and Elizabeth A. Muller from <strong>Berkeley Earth</strong>. Their research concludes that:</p>
+            
+            <div class="quote-card">
+                <p>"A PM2.5 concentration of <strong>22 μg/m³</strong> is equivalent to smoking <strong>one cigarette per day</strong> in terms of long-term health and mortality risks."</p>
+            </div>
+            
+            <p>For example, if the PM2.5 concentration is 110 μg/m³, breathing that air for 24 hours exposes you to a health risk comparable to smoking 5 cigarettes.</p>
+            
+            <h3>Overlay Modes</h3>
+            <ul>
+                <li><strong>Worst Hour:</strong> Displays the grid color-coded by the <em>maximum</em> hourly PM2.5 level predicted or recorded in the current 48-hour cycle. Since air pollution spikes at specific hours (e.g. rush hours or evenings), this highlights peak exposure risk.</li>
+                <li><strong>Current:</strong> Displays real-time air quality levels.</li>
+            </ul>
+
+            <h3>Data Sources</h3>
+            <p>Air quality measurements are fetched live from the <strong>Open-Meteo Air Quality API</strong>, which pulls global datasets from the Copernicus Atmosphere Monitoring Service (CAMS). Search suggestions are powered by OpenStreetMap Nominatim.</p>
+            
+            <p class="disclaimer"><em>Disclaimer: This app is an educational and communication tool to help visualize air pollution. It is not intended for medical diagnosis or clinical use.</em></p>
+        </div>
+    </dialog>
+
+    <!-- Leaflet.js JavaScript -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <!-- Application Logic -->
+    <script src="app.js"></script>
+</body>
+</html>
