@@ -16,7 +16,9 @@ document.addEventListener('DOMContentLoaded', () => {
         currentHighlight: null, // Highlighted selected cell rectangle
         userCoords: null,       // User's physical location
         rateLimitModalActive: false, // Track if rate limit warning modal is active
-        globalCache: null      // Loaded global cache data (lat_lng => data)
+        globalCache: null,      // Loaded global cache data (lat_lng => data)
+        globalCacheDetailed: null, // Preloaded detailed global cache (lat_lng => data)
+        detailedCacheLoaded: false // Track if detailed cache has finished loading
     };
 
     // --- Configuration Constants ---
@@ -84,6 +86,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Load Global Cache
         loadGlobalCache();
+
+        // Preload Detailed Global Cache in background
+        preloadDetailedCache();
 
         // Load Cache from LocalStorage
         try {
@@ -1643,7 +1648,95 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    async function preloadDetailedCache() {
+        const indicator = document.getElementById('preload-indicator');
+        const text = document.getElementById('preload-text');
+        
+        if (indicator) {
+            indicator.classList.remove('hidden');
+        }
+        
+        try {
+            const response = await fetch('global-cache-detailed.json');
+            if (!response.ok) throw new Error('Failed to load global-cache-detailed.json');
+            const data = await response.json();
+            
+            state.globalCacheDetailed = {};
+            data.forEach(row => {
+                const [
+                    lat, lng, 
+                    current_pm2_5, current_us_aqi, 
+                    worst_pm2_5, worst_us_aqi, 
+                    annual_avg_pm2_5, annual_avg_us_aqi, 
+                    worst_day_pm2_5, worst_day_us_aqi, 
+                    worst_day_date, worst_day_aqi_date
+                ] = row;
+                
+                const key = `${lat}_${lng}`;
+                state.globalCacheDetailed[key] = {
+                    current_pm2_5,
+                    current_us_aqi,
+                    worst_pm2_5,
+                    worst_us_aqi,
+                    annual_avg_pm2_5,
+                    annual_avg_us_aqi,
+                    worst_day_pm2_5,
+                    worst_day_us_aqi,
+                    worst_day_date,
+                    worst_day_aqi_date
+                };
+            });
+            
+            state.detailedCacheLoaded = true;
+            console.log(`Detailed global cache loaded successfully: ${Object.keys(state.globalCacheDetailed).length} coordinates.`);
+            
+            if (indicator && text) {
+                indicator.classList.add('ready');
+                const icon = indicator.querySelector('i');
+                if (icon) {
+                    icon.setAttribute('data-lucide', 'check');
+                    icon.className = 'success-icon';
+                    if (window.lucide) {
+                        window.lucide.createIcons();
+                    }
+                }
+                text.textContent = 'Detailed map data ready';
+                
+                setTimeout(() => {
+                    indicator.classList.add('fade-out');
+                    setTimeout(() => {
+                        indicator.classList.add('hidden');
+                        indicator.classList.remove('fade-out', 'ready');
+                    }, 500);
+                }, 3000);
+            }
+            
+            updateGrid();
+        } catch (e) {
+            console.error('Failed to preload detailed global cache:', e);
+            if (indicator) {
+                indicator.classList.add('hidden');
+            }
+        }
+    }
+
     function lookupGlobalCache(lat, lng) {
+        if (state.detailedCacheLoaded && state.globalCacheDetailed) {
+            const GRID_SIZE = 0.8;
+            let nearestLat = Math.round(lat / GRID_SIZE) * GRID_SIZE;
+            let nearestLng = Math.round(lng / GRID_SIZE) * GRID_SIZE;
+            
+            nearestLat = Math.max(-60, Math.min(76, nearestLat));
+            if (nearestLng > 180) nearestLng -= 360;
+            if (nearestLng < -180) nearestLng += 360;
+            
+            nearestLat = parseFloat(nearestLat.toFixed(2));
+            nearestLng = parseFloat(nearestLng.toFixed(2));
+            
+            const key = `${nearestLat}_${nearestLng}`;
+            return state.globalCacheDetailed[key] || null;
+        }
+
         if (!state.globalCache) return null;
         
         const GRID_SIZE = 4.0;
