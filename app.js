@@ -338,7 +338,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Update detail drawer if open
         if (state.selectedCell) {
-            updateDrawerUI(state.selectedCell.data, state.selectedCell.latCenter, state.selectedCell.lngCenter);
+            const data = state.selectedCell.data;
+            const needsHistory = state.calculationBase === 'aqi' 
+                ? (data.annual_avg_us_aqi === undefined) 
+                : (data.annual_avg_pm2_5 === undefined);
+
+            if (needsHistory) {
+                setHistoricalLoadingState();
+                fetchBatchHistoricalAirQuality([{ 
+                    key: state.selectedCell.key, 
+                    lat: state.selectedCell.latCenter, 
+                    lng: state.selectedCell.lngCenter 
+                }]).then(() => {
+                    const updatedCached = state.cache[state.selectedCell.key];
+                    if (updatedCached && state.selectedCell && state.selectedCell.key === state.selectedCell.key) {
+                        state.selectedCell.data = updatedCached.data;
+                        updateDrawerUI(updatedCached.data, state.selectedCell.latCenter, state.selectedCell.lngCenter);
+                    }
+                }).catch(err => {
+                    console.error('Failed to load historical data on base switch:', err);
+                    setHistoricalErrorState();
+                });
+            } else {
+                updateDrawerUI(state.selectedCell.data, state.selectedCell.latCenter, state.selectedCell.lngCenter);
+            }
         }
 
         // Trigger grid update in case viewport cells need new cache variables loaded
@@ -643,7 +666,11 @@ document.addEventListener('DOMContentLoaded', () => {
         updateDrawerUI(data, latCenter, lngCenter);
 
         // 2. If historical data is not cached, fetch it in background
-        if (data.annual_avg_pm2_5 === undefined) {
+        const needsHistory = state.calculationBase === 'aqi'
+            ? (data.annual_avg_us_aqi === undefined)
+            : (data.annual_avg_pm2_5 === undefined);
+
+        if (needsHistory) {
             setHistoricalLoadingState();
             try {
                 await fetchBatchHistoricalAirQuality([{ key, lat: latCenter, lng: lngCenter }]);
@@ -1474,6 +1501,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!cachedItem) return false;
         
         const isForecastValid = (Date.now() - cachedItem.timestamp) < state.cacheTTL;
+        
+        // If in AQI mode, we require the AQI forecast variables to be present in cached data
+        if (state.calculationBase === 'aqi') {
+            const hasAqiForecast = cachedItem.data.current_us_aqi !== undefined && cachedItem.data.worst_us_aqi !== undefined;
+            if (!hasAqiForecast) return false;
+        }
         
         // If in historical mode, we require the historical data corresponding to the selected calculation base
         if (state.selectedMode === 'annual' || state.selectedMode === 'worst_day') {
