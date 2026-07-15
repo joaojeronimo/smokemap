@@ -442,6 +442,9 @@ document.addEventListener('DOMContentLoaded', () => {
             displaySearchResults(results);
         } catch (e) {
             console.error('Error fetching geocoding suggestions:', e);
+            if (navigator.onLine) {
+                showRateLimitModal();
+            }
         }
     }
 
@@ -748,22 +751,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Geocoding Reverse ---
     async function reverseGeocode(lat, lng) {
-        const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=14`, {
-            headers: {
-                'User-Agent': 'SmokeMap/1.0 (Web Air Quality overlay project)'
+        try {
+            const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=14`, {
+                headers: {
+                    'User-Agent': 'SmokeMap/1.0 (Web Air Quality overlay project)'
+                }
+            });
+            
+            if (response.status === 429) {
+                showRateLimitModal();
             }
-        });
-        
-        if (response.status === 429) {
-            showRateLimitModal();
-        }
-        if (!response.ok) throw new Error('Reverse geocode failed');
-        
-        const res = await response.json();
-        
-        // Compose location details from Nominatim
-        const addr = res.address;
-        if (!addr) return `${lat}, ${lng}`;
+            if (!response.ok) throw new Error('Reverse geocode failed');
+            
+            const res = await response.json();
+            
+            // Compose location details from Nominatim
+            const addr = res.address;
+            if (!addr) return `${lat}, ${lng}`;
 
         // Build nice human readable string
         const neighborhood = addr.neighbourhood || addr.suburb || addr.quarter;
@@ -779,7 +783,13 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             return country || `${lat}, ${lng}`;
         }
+    } catch (e) {
+        if (navigator.onLine) {
+            showRateLimitModal();
+        }
+        throw e;
     }
+}
 
     // --- Open-Meteo API Fetcher ---
     async function fetchBatchAirQuality(queue) {
@@ -880,6 +890,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             } catch (e) {
                 console.error('Error fetching air quality forecast:', e);
+                if (navigator.onLine) {
+                    showRateLimitModal();
+                }
             }
         };
         promises.push(fetchForecast());
@@ -993,6 +1006,9 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         } catch (e) {
             console.error('Error fetching historical air quality data:', e);
+            if (navigator.onLine) {
+                showRateLimitModal();
+            }
         }
     }
 
