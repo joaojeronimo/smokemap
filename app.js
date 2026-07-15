@@ -14,7 +14,8 @@ document.addEventListener('DOMContentLoaded', () => {
         searchTimeout: null,
         debouncedFetchTimeout: null,
         currentHighlight: null, // Highlighted selected cell rectangle
-        userCoords: null       // User's physical location
+        userCoords: null,       // User's physical location
+        rateLimitModalActive: false // Track if rate limit warning modal is active
     };
 
     // --- Configuration Constants ---
@@ -203,6 +204,32 @@ document.addEventListener('DOMContentLoaded', () => {
                 infoModal.close();
             }
         });
+
+        // Rate Limit Modal Setup
+        const rateLimitModal = document.getElementById('rate-limit-modal');
+        const closeRateLimitBtn = document.getElementById('close-rate-limit-modal');
+        const dismissRateLimitBtn = document.getElementById('dismiss-rate-limit-btn');
+        
+        const closeRateLimit = () => {
+            if (rateLimitModal) {
+                rateLimitModal.close();
+            }
+            state.rateLimitModalActive = false;
+        };
+
+        if (closeRateLimitBtn) {
+            closeRateLimitBtn.addEventListener('click', closeRateLimit);
+        }
+        if (dismissRateLimitBtn) {
+            dismissRateLimitBtn.addEventListener('click', closeRateLimit);
+        }
+        if (rateLimitModal) {
+            rateLimitModal.addEventListener('click', (e) => {
+                if (e.target === rateLimitModal) {
+                    closeRateLimit();
+                }
+            });
+        }
 
         // Details Drawer Close Button
         document.getElementById('close-drawer').addEventListener('click', closeDetailsDrawer);
@@ -406,6 +433,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
             
+            if (response.status === 429) {
+                showRateLimitModal();
+            }
             if (!response.ok) throw new Error('Nominatim request failed');
             
             const results = await response.json();
@@ -724,6 +754,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
         
+        if (response.status === 429) {
+            showRateLimitModal();
+        }
         if (!response.ok) throw new Error('Reverse geocode failed');
         
         const res = await response.json();
@@ -764,6 +797,9 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${latitudes}&longitude=${longitudes}&current=us_aqi,pm2_5,pm10,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone,us_aqi_pm2_5,us_aqi_pm10,us_aqi_ozone,us_aqi_nitrogen_dioxide,us_aqi_sulphur_dioxide,us_aqi_carbon_monoxide&hourly=us_aqi,pm2_5,pm10,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone,us_aqi_pm2_5,us_aqi_pm10,us_aqi_ozone,us_aqi_nitrogen_dioxide,us_aqi_sulphur_dioxide,us_aqi_carbon_monoxide&timezone=auto`;
                 const response = await fetch(url);
+                if (response.status === 429) {
+                    showRateLimitModal();
+                }
                 if (!response.ok) throw new Error('Open-Meteo Air Quality batch request failed');
                 
                 const results = await response.json();
@@ -872,6 +908,9 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${latitudes}&longitude=${longitudes}&start_date=2025-01-01&end_date=2025-12-31&hourly=pm2_5,us_aqi&timezone=auto`;
             const response = await fetch(url);
+            if (response.status === 429) {
+                showRateLimitModal();
+            }
             if (!response.ok) throw new Error('Open-Meteo Air Quality historical batch request failed');
 
             const results = await response.json();
@@ -1529,6 +1568,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 delete state.cache[key];
             }
         });
+    }
+
+    function showRateLimitModal() {
+        if (state.rateLimitModalActive) return;
+        state.rateLimitModalActive = true;
+        
+        const rateLimitModal = document.getElementById('rate-limit-modal');
+        if (rateLimitModal) {
+            // Initialize Lucide icons on the modal element in case they haven't been processed
+            if (window.lucide) {
+                window.lucide.createIcons();
+            }
+            rateLimitModal.showModal();
+        }
     }
 
     // Initialize application logic

@@ -911,6 +911,43 @@ html, body {
     margin-top: 10px;
 }
 
+/* --- Warning Modal Customizations --- */
+.modal-header-title-group {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.logo-wrapper.warning-style {
+    background: rgba(245, 158, 11, 0.2);
+    border-color: var(--color-moderate);
+    color: var(--color-moderate);
+    box-shadow: 0 0 10px rgba(245, 158, 11, 0.25);
+    flex-shrink: 0;
+}
+
+.text-center {
+    text-align: center;
+    align-items: center;
+}
+
+.modal-alert-title {
+    font-size: 1.2rem;
+    margin-bottom: 4px;
+}
+
+.quote-card.warning-quote {
+    border-left-color: var(--color-moderate);
+    text-align: left;
+    width: 100%;
+    font-style: normal;
+}
+
+.width-full {
+    width: 100%;
+}
+
+
 /* --- Leaflet Customizations --- */
 .leaflet-bar {
     border: 1px solid var(--border-glass) !important;

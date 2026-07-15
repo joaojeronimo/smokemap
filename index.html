@@ -304,6 +304,33 @@
         </div>
     </dialog>
 
+    <!-- Rate Limit Modal (HTTP 429 Warning) -->
+    <dialog id="rate-limit-modal" class="glass-panel modal-dialog">
+        <div class="modal-header">
+            <div class="modal-header-title-group">
+                <div class="logo-wrapper warning-style">
+                    <i data-lucide="clock" class="logo-icon"></i>
+                </div>
+                <h2>Temporary Pause</h2>
+            </div>
+            <button id="close-rate-limit-modal" class="icon-btn" aria-label="Close modal">
+                <i data-lucide="x"></i>
+            </button>
+        </div>
+        <div class="modal-body text-center">
+            <h3 class="modal-alert-title">Too Many Requests</h3>
+            <p>Our air quality servers are currently experiencing a very high volume of requests. To keep the map running smoothly for everyone, request limits have been temporarily applied to your connection.</p>
+            <div class="quote-card warning-quote">
+                <strong>What should I do?</strong>
+                <p>Please wait a minute or two before panning, zooming, or searching again. The system will automatically allow new requests shortly.</p>
+            </div>
+            <button id="dismiss-rate-limit-btn" class="toggle-btn active width-full">
+                Got it
+            </button>
+        </div>
+    </dialog>
+
+
     <!-- Leaflet.js JavaScript -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
     
