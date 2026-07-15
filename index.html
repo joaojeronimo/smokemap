@@ -75,6 +75,20 @@
         </div>
         
         <div class="control-divider"></div>
+
+        <div class="control-section">
+            <span class="control-label">Calculation Base</span>
+            <div class="button-group">
+                <button id="calc-pm25" class="toggle-btn active" data-calc="pm25">
+                    <i data-lucide="wind" class="btn-icon"></i> PM2.5 Only
+                </button>
+                <button id="calc-aqi" class="toggle-btn" data-calc="aqi">
+                    <i data-lucide="activity" class="btn-icon"></i> All Pollutants (AQI)
+                </button>
+            </div>
+        </div>
+        
+        <div class="control-divider"></div>
         
         <div class="control-section">
             <span class="control-label">Map Style</span>
@@ -107,7 +121,7 @@
                 <span>5.0+</span>
             </div>
         </div>
-        <div class="legend-footer">
+        <div id="legend-caption" class="legend-footer">
             1 cigarette ≈ 22 μg/m³ PM2.5 (Berkeley Earth)
         </div>
     </div>
@@ -195,6 +209,14 @@
                     </div>
                 </section>
 
+                <!-- Pollutants Breakdown -->
+                <section class="drawer-section">
+                    <h3>Pollutants Breakdown</h3>
+                    <div class="pollutant-grid" id="pollutant-breakdown-grid">
+                        <!-- Pollutant cards generated dynamically -->
+                    </div>
+                </section>
+
                 <!-- Comparison Cards (Dynamic based on cigarette count) -->
                 <section class="drawer-section">
                     <h3>What this means</h3>
@@ -242,14 +264,37 @@
                 <p>"A PM2.5 concentration of <strong>22 μg/m³</strong> is equivalent to smoking <strong>one cigarette per day</strong> in terms of long-term health and mortality risks."</p>
             </div>
             
-            <p>For example, if the PM2.5 concentration is 110 μg/m³, breathing that air for 24 hours exposes you to a health risk comparable to smoking 5 cigarettes.</p>
+            <p>To compute the cigarette equivalent, SmokeMap supports two different methodologies depending on your active selection:</p>
+            
+            <ul style="list-style-type: none; padding-left: 0; display: flex; flex-direction: column; gap: 14px;">
+                <li>
+                    <strong>1. PM2.5 Only Method:</strong> We calculate cigarettes directly from fine particulate matter (PM2.5) concentrations:
+                    <div style="font-family: monospace; background: rgba(0,0,0,0.25); padding: 8px 12px; border-radius: 8px; margin: 6px 0; font-size: 0.82rem; border: 1px solid var(--border-glass); color: var(--text-main);">
+                        Cigarettes = PM2.5 (μg/m³) / 22
+                    </div>
+                </li>
+                <li>
+                    <strong>2. All Pollutants (AQI) Method:</strong> Since other pollutants (like Ozone, Carbon Monoxide, or Nitrogen Dioxide) also carry toxicity, the U.S. Environmental Protection Agency (EPA) calculates a consolidated Air Quality Index (AQI) determined by the worst-performing pollutant. To translate this overall toxicity into cigarettes, SmokeMap mathematically inverts the EPA AQI formula to find the <em>equivalent PM2.5 concentration</em> (C<sub>eq</sub>) that would produce that same AQI value, and then converts it to cigarettes:
+                    <div style="font-family: monospace; background: rgba(0,0,0,0.25); padding: 8px 12px; border-radius: 8px; margin: 6px 0; font-size: 0.82rem; border: 1px solid var(--border-glass); color: var(--text-main); line-height: 1.4;">
+                        C<sub>eq</sub> = ((AQI - I<sub>Lo</sub>) * (BP<sub>Hi</sub> - BP<sub>Lo</sub>)) / (I<sub>Hi</sub> - I<sub>Lo</sub>) + BP<sub>Lo</sub><br>
+                        Cigarettes = C<sub>eq</sub> / 22
+                    </div>
+                    Where BP<sub>Lo</sub> / BP<sub>Hi</sub> are the concentration breakpoints, and I<sub>Lo</sub> / I<sub>Hi</sub> are the index breakpoints for the corresponding AQI category range.
+                </li>
+            </ul>
             
             <h3>Overlay Modes</h3>
             <ul>
-                <li><strong>Worst Hour:</strong> Displays the grid color-coded by the <em>maximum</em> hourly PM2.5 level predicted or recorded in the current 48-hour cycle. Since air pollution spikes at specific hours (e.g. rush hours or evenings), this highlights peak exposure risk.</li>
+                <li><strong>Worst Hour:</strong> Displays the grid color-coded by the <em>maximum</em> hourly level predicted or recorded in the current 48-hour cycle. Since air pollution spikes at specific hours (e.g. rush hours or evenings), this highlights peak exposure risk.</li>
                 <li><strong>Current:</strong> Displays real-time air quality levels.</li>
-                <li><strong>Annual Average (2025):</strong> Displays the grid color-coded by the average PM2.5 level across the entire year of 2025, highlighting long-term baseline exposure.</li>
-                <li><strong>Worst Day (2025):</strong> Displays the grid color-coded by the average PM2.5 level on the worst single day (highest 24h average) of 2025, highlighting extreme historical events.</li>
+                <li><strong>Annual Average (2025):</strong> Displays the grid color-coded by the average level across the entire year of 2025, highlighting long-term baseline exposure.</li>
+                <li><strong>Worst Day (2025):</strong> Displays the grid color-coded by the average level on the worst single day (highest 24h average) of 2025, highlighting extreme historical events.</li>
+            </ul>
+
+            <h3>Calculation Bases</h3>
+            <ul>
+                <li><strong>PM2.5 Only:</strong> Translates only fine particulate matter (PM2.5) into cigarettes using the Berkeley Earth factor (22 μg/m³ = 1 cigarette/day). This represents the direct mortality risk of PM2.5.</li>
+                <li><strong>All Pollutants (AQI):</strong> Considers all major criteria pollutants (PM2.5, PM10, Ozone, CO, NO₂, and SO₂). It calculates the overall U.S. AQI, maps it back to an equivalent PM2.5 level using standard EPA breakpoints, and then translates it to cigarettes. This represents a comprehensive view of overall air toxicity.</li>
             </ul>
 
             <h3>Data Sources</h3>

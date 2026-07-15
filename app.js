@@ -6,6 +6,7 @@ document.addEventListener('DOMContentLoaded', () => {
         map: null,
         selectedMode: 'worst', // 'worst' or 'current'
         selectedStyle: 'dark', // 'dark' or 'light'
+        calculationBase: 'pm25', // 'pm25' or 'aqi'
         selectedCell: null,    // { bounds: L.LatLngBounds, data: Object, latCenter: Number, lngCenter: Number }
         gridCells: {},         // Key: 'lat_lng', Value: { rectangle: L.Rectangle, data: Object }
         cache: {},             // Key: 'lat_lng', Value: { timestamp: Number, data: Object }
@@ -18,6 +19,47 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Configuration Constants ---
     const BERKELEY_EARTH_PM25_FACTOR = 22; // 22 ug/m3 PM2.5 = 1 cigarette per day
+
+    // Convert US AQI back to PM2.5 concentration using the EPA 2024 breakpoints
+    function getPm25FromAqi(aqi) {
+        if (aqi <= 0) return 0;
+        
+        let bpLo, bpHi, iLo, iHi;
+        
+        if (aqi <= 50) {
+            bpLo = 0.0; bpHi = 9.0;
+            iLo = 0; iHi = 50;
+        } else if (aqi <= 100) {
+            bpLo = 9.1; bpHi = 35.4;
+            iLo = 51; iHi = 100;
+        } else if (aqi <= 150) {
+            bpLo = 35.5; bpHi = 55.4;
+            iLo = 101; iHi = 150;
+        } else if (aqi <= 200) {
+            bpLo = 55.5; bpHi = 125.4;
+            iLo = 151; iHi = 200;
+        } else if (aqi <= 300) {
+            bpLo = 125.5; bpHi = 225.4;
+            iLo = 201; iHi = 300;
+        } else if (aqi <= 400) {
+            bpLo = 225.5; bpHi = 325.4;
+            iLo = 301; iHi = 400;
+        } else {
+            bpLo = 325.5; bpHi = 999.9;
+            iLo = 401; iHi = 500;
+        }
+        
+        return ((aqi - iLo) * (bpHi - bpLo)) / (iHi - iLo) + bpLo;
+    }
+
+    // Determine the AQI level category and color class
+    function getAqiCategory(aqi) {
+        if (aqi <= 50) return { class: 'bg-clean', label: 'Good' };
+        if (aqi <= 100) return { class: 'bg-moderate', label: 'Moderate' };
+        if (aqi <= 150) return { class: 'bg-unhealthy-sens', label: 'Unhealthy (Sens)' };
+        if (aqi <= 200) return { class: 'bg-unhealthy', label: 'Unhealthy' };
+        return { class: 'bg-hazardous', label: 'Hazardous' };
+    }
 
     // Base Map Tiles URLs
     const MAP_LAYERS = {
@@ -40,7 +82,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Load Cache from LocalStorage
         try {
-            const savedCache = localStorage.getItem('smokemap_aqi_cache');
+            const savedCache = localStorage.getItem('smokemap_aqi_cache_v2');
             if (savedCache) {
                 state.cache = JSON.parse(savedCache);
                 cleanExpiredCache();
@@ -129,6 +171,14 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         document.getElementById('mode-worst-day').addEventListener('click', (e) => {
             switchMode('worst_day');
+        });
+
+        // Toggle Calculation Base: PM2.5 Only vs All Pollutants (AQI)
+        document.getElementById('calc-pm25').addEventListener('click', () => {
+            switchCalculationBase('pm25');
+        });
+        document.getElementById('calc-aqi').addEventListener('click', () => {
+            switchCalculationBase('aqi');
         });
 
         // Toggle Map Style: Dark vs Light
@@ -256,6 +306,42 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // Trigger grid update in case viewport cells need historical data loaded
+        updateGrid();
+    }
+
+    // --- Calculation Base Toggle ---
+    function switchCalculationBase(base) {
+        if (state.calculationBase === base) return;
+        state.calculationBase = base;
+        
+        document.getElementById('calc-pm25').classList.toggle('active', base === 'pm25');
+        document.getElementById('calc-aqi').classList.toggle('active', base === 'aqi');
+        
+        // Update the legend caption dynamically
+        const legendCaption = document.getElementById('legend-caption');
+        if (legendCaption) {
+            if (base === 'aqi') {
+                legendCaption.innerHTML = 'Cigarettes derived from overall US AQI';
+            } else {
+                legendCaption.innerHTML = '1 cigarette ≈ 22 μg/m³ PM2.5 (Berkeley Earth)';
+            }
+        }
+
+        // Re-render cell colors on the map
+        Object.values(state.gridCells).forEach(cell => {
+            const style = getCellColorStyle(cell.data);
+            cell.rectangle.setStyle({
+                fillColor: style.color,
+                fillOpacity: style.opacity
+            });
+        });
+
+        // Update detail drawer if open
+        if (state.selectedCell) {
+            updateDrawerUI(state.selectedCell.data, state.selectedCell.latCenter, state.selectedCell.lngCenter);
+        }
+
+        // Trigger grid update in case viewport cells need new cache variables loaded
         updateGrid();
     }
 
@@ -649,7 +735,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // 1. Fetch Forecast
         const fetchForecast = async () => {
             try {
-                const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${latitudes}&longitude=${longitudes}&current=pm2_5&hourly=pm2_5&timezone=auto`;
+                const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${latitudes}&longitude=${longitudes}&current=us_aqi,pm2_5,pm10,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone,us_aqi_pm2_5,us_aqi_pm10,us_aqi_ozone,us_aqi_nitrogen_dioxide,us_aqi_sulphur_dioxide,us_aqi_carbon_monoxide&hourly=us_aqi,pm2_5,pm10,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone,us_aqi_pm2_5,us_aqi_pm10,us_aqi_ozone,us_aqi_nitrogen_dioxide,us_aqi_sulphur_dioxide,us_aqi_carbon_monoxide&timezone=auto`;
                 const response = await fetch(url);
                 if (!response.ok) throw new Error('Open-Meteo Air Quality batch request failed');
                 
@@ -659,29 +745,73 @@ document.addEventListener('DOMContentLoaded', () => {
                 resultsArray.forEach((item, index) => {
                     const targetKey = queue[index].key;
                     const hourly = item.hourly;
+                    
                     let worstPm25 = 0;
-                    let worstTimeIndex = 0;
+                    let worstPm25TimeIndex = 0;
+                    let worstAqi = 0;
+                    let worstAqiTimeIndex = 0;
 
-                    if (hourly && hourly.pm2_5) {
-                        const maxScanHours = Math.min(48, hourly.pm2_5.length);
-                        for (let i = 0; i < maxScanHours; i++) {
-                            if (hourly.pm2_5[i] > worstPm25) {
-                                worstPm25 = hourly.pm2_5[i];
-                                worstTimeIndex = i;
+                    if (hourly) {
+                        const maxScanHours = Math.min(48, hourly.time.length);
+                        if (hourly.pm2_5) {
+                            for (let i = 0; i < maxScanHours; i++) {
+                                if (hourly.pm2_5[i] > worstPm25) {
+                                    worstPm25 = hourly.pm2_5[i];
+                                    worstPm25TimeIndex = i;
+                                }
+                            }
+                        }
+                        if (hourly.us_aqi) {
+                            for (let i = 0; i < maxScanHours; i++) {
+                                if (hourly.us_aqi[i] > worstAqi) {
+                                    worstAqi = hourly.us_aqi[i];
+                                    worstAqiTimeIndex = i;
+                                }
                             }
                         }
                     }
+
+                    const currentVal = (prop) => {
+                        if (item.current && item.current[prop] !== undefined) {
+                            return item.current[prop];
+                        }
+                        if (hourly && hourly[prop] && hourly[prop].length > 0) {
+                            return hourly[prop][0];
+                        }
+                        return 0;
+                    };
 
                     const existingData = state.cache[targetKey] ? state.cache[targetKey].data : {};
                     state.cache[targetKey] = {
                         timestamp: now,
                         data: {
                             ...existingData,
-                            current_pm2_5: item.current ? item.current.pm2_5 : (hourly ? hourly.pm2_5[0] : 0),
+                            current_pm2_5: currentVal('pm2_5'),
+                            current_us_aqi: currentVal('us_aqi'),
+                            
+                            // Other current pollutants
+                            current_pm10: currentVal('pm10'),
+                            current_carbon_monoxide: currentVal('carbon_monoxide'),
+                            current_nitrogen_dioxide: currentVal('nitrogen_dioxide'),
+                            current_sulphur_dioxide: currentVal('sulphur_dioxide'),
+                            current_ozone: currentVal('ozone'),
+                            
+                            // Other current pollutant AQIs
+                            current_aqi_pm2_5: currentVal('us_aqi_pm2_5'),
+                            current_aqi_pm10: currentVal('us_aqi_pm10'),
+                            current_aqi_carbon_monoxide: currentVal('us_aqi_carbon_monoxide'),
+                            current_aqi_nitrogen_dioxide: currentVal('us_aqi_nitrogen_dioxide'),
+                            current_aqi_sulphur_dioxide: currentVal('us_aqi_sulphur_dioxide'),
+                            current_aqi_ozone: currentVal('us_aqi_ozone'),
+
                             worst_pm2_5: worstPm25,
-                            worst_time: hourly ? hourly.time[worstTimeIndex] : '--:--',
+                            worst_pm25_time: hourly ? hourly.time[worstPm25TimeIndex] : '--:--',
+                            worst_us_aqi: worstAqi,
+                            worst_aqi_time: hourly ? hourly.time[worstAqiTimeIndex] : '--:--',
+                            
                             hourly_times: hourly ? hourly.time.slice(0, 48) : [],
-                            hourly_pm25: hourly ? hourly.pm2_5.slice(0, 48) : []
+                            hourly_pm25: hourly ? hourly.pm2_5.slice(0, 48) : [],
+                            hourly_us_aqi: hourly ? hourly.us_aqi.slice(0, 48) : []
                         }
                     };
                 });
@@ -700,7 +830,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Persist to LocalStorage
         try {
-            localStorage.setItem('smokemap_aqi_cache', JSON.stringify(state.cache));
+            localStorage.setItem('smokemap_aqi_cache_v2', JSON.stringify(state.cache));
         } catch (e) {
             console.error('Failed to save cache to localStorage:', e);
         }
@@ -713,7 +843,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const longitudes = queue.map(q => q.lng).join(',');
 
         try {
-            const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${latitudes}&longitude=${longitudes}&start_date=2025-01-01&end_date=2025-12-31&hourly=pm2_5&timezone=auto`;
+            const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${latitudes}&longitude=${longitudes}&start_date=2025-01-01&end_date=2025-12-31&hourly=pm2_5,us_aqi&timezone=auto`;
             const response = await fetch(url);
             if (!response.ok) throw new Error('Open-Meteo Air Quality historical batch request failed');
 
@@ -723,6 +853,11 @@ document.addEventListener('DOMContentLoaded', () => {
             resultsArray.forEach((item, index) => {
                 const targetKey = queue[index].key;
                 const hourly = item.hourly;
+
+                // Ensure cache entry structure exists
+                if (!state.cache[targetKey]) {
+                    state.cache[targetKey] = { timestamp: Date.now(), data: {} };
+                }
 
                 if (hourly && hourly.pm2_5) {
                     const validPm25 = hourly.pm2_5.filter(val => val !== null && val !== undefined);
@@ -752,14 +887,42 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     });
 
-                    // Ensure cache entry structure exists
-                    if (!state.cache[targetKey]) {
-                        state.cache[targetKey] = { timestamp: Date.now(), data: {} };
-                    }
-
                     state.cache[targetKey].data.annual_avg_pm2_5 = annualAvg;
                     state.cache[targetKey].data.worst_day_pm2_5 = worstDayPm25;
                     state.cache[targetKey].data.worst_day_date = worstDayDate;
+                }
+
+                if (hourly && hourly.us_aqi) {
+                    const validAqi = hourly.us_aqi.filter(val => val !== null && val !== undefined);
+                    const annualAvgAqi = validAqi.length > 0 ? (validAqi.reduce((a, b) => a + b, 0) / validAqi.length) : 0;
+
+                    // Group by date to find the worst day
+                    const dailyAqiValues = {};
+                    for (let i = 0; i < hourly.time.length; i++) {
+                        const timeStr = hourly.time[i];
+                        const val = hourly.us_aqi[i];
+                        if (val === null || val === undefined) continue;
+                        const dateStr = timeStr.substring(0, 10);
+                        if (!dailyAqiValues[dateStr]) {
+                            dailyAqiValues[dateStr] = [];
+                        }
+                        dailyAqiValues[dateStr].push(val);
+                    }
+
+                    let worstDayAqiDate = '--';
+                    let worstDayAqi = 0;
+                    Object.keys(dailyAqiValues).forEach(dateStr => {
+                        const vals = dailyAqiValues[dateStr];
+                        const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+                        if (avg > worstDayAqi) {
+                            worstDayAqi = avg;
+                            worstDayAqiDate = dateStr;
+                        }
+                    });
+
+                    state.cache[targetKey].data.annual_avg_us_aqi = annualAvgAqi;
+                    state.cache[targetKey].data.worst_day_us_aqi = worstDayAqi;
+                    state.cache[targetKey].data.worst_day_aqi_date = worstDayAqiDate;
                 }
             });
         } catch (e) {
@@ -793,21 +956,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Cigarette Calculations & Color Scale ---
     function getCellColorStyle(data) {
-        // Choose base PM2.5 value depending on mode
         let val;
+        let aqi;
+
         if (state.selectedMode === 'worst') {
             val = data.worst_pm2_5;
+            aqi = data.worst_us_aqi !== undefined ? data.worst_us_aqi : 0;
         } else if (state.selectedMode === 'current') {
             val = data.current_pm2_5;
+            aqi = data.current_us_aqi !== undefined ? data.current_us_aqi : 0;
         } else if (state.selectedMode === 'annual') {
             val = data.annual_avg_pm2_5 !== undefined ? data.annual_avg_pm2_5 : 0;
+            aqi = data.annual_avg_us_aqi !== undefined ? data.annual_avg_us_aqi : 0;
         } else if (state.selectedMode === 'worst_day') {
             val = data.worst_day_pm2_5 !== undefined ? data.worst_day_pm2_5 : 0;
+            aqi = data.worst_day_us_aqi !== undefined ? data.worst_day_us_aqi : 0;
         } else {
             val = data.current_pm2_5;
+            aqi = data.current_us_aqi !== undefined ? data.current_us_aqi : 0;
         }
         
-        const cigCount = val / BERKELEY_EARTH_PM25_FACTOR;
+        let cigCount;
+        if (state.calculationBase === 'aqi') {
+            const eqPm25 = getPm25FromAqi(aqi);
+            cigCount = eqPm25 / BERKELEY_EARTH_PM25_FACTOR;
+        } else {
+            cigCount = val / BERKELEY_EARTH_PM25_FACTOR;
+        }
 
         // Colors mapping to custom styling values
         if (cigCount <= 0.5) {
@@ -828,34 +1003,49 @@ document.addEventListener('DOMContentLoaded', () => {
         // Set coordinates text
         document.getElementById('location-coords').textContent = `Coords: ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
 
-        // Mode Metrics
-        const currentCig = data.current_pm2_5 / BERKELEY_EARTH_PM25_FACTOR;
-        const worstCig = data.worst_pm2_5 / BERKELEY_EARTH_PM25_FACTOR;
+        // Helper to get cigarette count based on current calculation base
+        const getCigValue = (pm25Val, aqiVal) => {
+            if (state.calculationBase === 'aqi') {
+                const eqPm = getPm25FromAqi(aqiVal !== undefined ? aqiVal : 0);
+                return eqPm / BERKELEY_EARTH_PM25_FACTOR;
+            } else {
+                return pm25Val / BERKELEY_EARTH_PM25_FACTOR;
+            }
+        };
+
+        const currentCig = getCigValue(data.current_pm2_5, data.current_us_aqi);
+        const worstCig = getCigValue(data.worst_pm2_5, data.worst_us_aqi);
 
         // Choose primary metric and description based on mode selected
         let primaryCig, primaryPm25, modeDescription;
         if (state.selectedMode === 'worst') {
-            primaryPm25 = data.worst_pm2_5;
-            primaryCig = primaryPm25 / BERKELEY_EARTH_PM25_FACTOR;
+            primaryPm25 = state.calculationBase === 'aqi' ? getPm25FromAqi(data.worst_us_aqi || 0) : data.worst_pm2_5;
+            primaryCig = worstCig;
             modeDescription = 'equivalent inhaled at worst forecasted hour';
         } else if (state.selectedMode === 'current') {
-            primaryPm25 = data.current_pm2_5;
-            primaryCig = primaryPm25 / BERKELEY_EARTH_PM25_FACTOR;
+            primaryPm25 = state.calculationBase === 'aqi' ? getPm25FromAqi(data.current_us_aqi || 0) : data.current_pm2_5;
+            primaryCig = currentCig;
             modeDescription = 'equivalent inhaled per 24 hours (current)';
         } else if (state.selectedMode === 'annual') {
-            primaryPm25 = data.annual_avg_pm2_5 !== undefined ? data.annual_avg_pm2_5 : 0;
-            primaryCig = primaryPm25 / BERKELEY_EARTH_PM25_FACTOR;
+            const annualPm = data.annual_avg_pm2_5 !== undefined ? data.annual_avg_pm2_5 : 0;
+            const annualAqi = data.annual_avg_us_aqi !== undefined ? data.annual_avg_us_aqi : 0;
+            primaryPm25 = state.calculationBase === 'aqi' ? getPm25FromAqi(annualAqi) : annualPm;
+            primaryCig = getCigValue(annualPm, annualAqi);
             modeDescription = 'equivalent inhaled per 24 hours (2025 average)';
         } else if (state.selectedMode === 'worst_day') {
-            primaryPm25 = data.worst_day_pm2_5 !== undefined ? data.worst_day_pm2_5 : 0;
-            primaryCig = primaryPm25 / BERKELEY_EARTH_PM25_FACTOR;
+            const worstDayPm = data.worst_day_pm2_5 !== undefined ? data.worst_day_pm2_5 : 0;
+            const worstDayAqi = data.worst_day_us_aqi !== undefined ? data.worst_day_us_aqi : 0;
+            primaryPm25 = state.calculationBase === 'aqi' ? getPm25FromAqi(worstDayAqi) : worstDayPm;
+            primaryCig = getCigValue(worstDayPm, worstDayAqi);
+            
             let formattedDate = '';
-            if (data.worst_day_date) {
+            const activeWorstDate = state.calculationBase === 'aqi' ? data.worst_day_aqi_date : data.worst_day_date;
+            if (activeWorstDate) {
                 try {
-                    const dateObj = new Date(data.worst_day_date);
+                    const dateObj = new Date(activeWorstDate);
                     formattedDate = dateObj.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
                 } catch (e) {
-                    formattedDate = data.worst_day_date;
+                    formattedDate = activeWorstDate;
                 }
             }
             modeDescription = `inhaled on worst day of 2025 (${formattedDate || 'date N/A'})`;
@@ -873,12 +1063,13 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Worst Hour Label Time format (ISO format is: 2026-07-14T20:00 -> 20:00)
         let timeLabel = '--:--';
-        if (data.worst_time && data.worst_time !== '--:--') {
+        const activeWorstTime = state.calculationBase === 'aqi' ? data.worst_aqi_time : data.worst_time;
+        if (activeWorstTime && activeWorstTime !== '--:--') {
             try {
-                const parts = data.worst_time.split('T');
-                timeLabel = parts[1] || data.worst_time;
+                const parts = activeWorstTime.split('T');
+                timeLabel = parts[1] || activeWorstTime;
             } catch (err) {
-                timeLabel = data.worst_time;
+                timeLabel = activeWorstTime;
             }
         }
         document.getElementById('worst-time-label').textContent = timeLabel;
@@ -888,21 +1079,34 @@ document.addEventListener('DOMContentLoaded', () => {
         const badgeText = document.getElementById('aqi-text');
         
         badge.className = 'aqi-badge'; // reset
-        if (primaryCig <= 0.5) {
-            badge.classList.add('bg-clean');
-            badgeText.textContent = 'Good';
-        } else if (primaryCig <= 1.5) {
-            badge.classList.add('bg-moderate');
-            badgeText.textContent = 'Moderate';
-        } else if (primaryCig <= 3.0) {
-            badge.classList.add('bg-unhealthy-sens');
-            badgeText.textContent = 'Unhealthy (Sens)';
-        } else if (primaryCig <= 5.0) {
-            badge.classList.add('bg-unhealthy');
-            badgeText.textContent = 'Unhealthy';
+
+        let aqiVal;
+        if (state.selectedMode === 'worst') aqiVal = data.worst_us_aqi;
+        else if (state.selectedMode === 'current') aqiVal = data.current_us_aqi;
+        else if (state.selectedMode === 'annual') aqiVal = data.annual_avg_us_aqi;
+        else if (state.selectedMode === 'worst_day') aqiVal = data.worst_day_us_aqi;
+
+        if (state.calculationBase === 'aqi' && aqiVal !== undefined) {
+            const cat = getAqiCategory(aqiVal);
+            badge.classList.add(cat.class);
+            badgeText.textContent = `${cat.label} (AQI ${Math.round(aqiVal)})`;
         } else {
-            badge.classList.add('bg-hazardous');
-            badgeText.textContent = 'Hazardous';
+            if (primaryCig <= 0.5) {
+                badge.classList.add('bg-clean');
+                badgeText.textContent = 'Good';
+            } else if (primaryCig <= 1.5) {
+                badge.classList.add('bg-moderate');
+                badgeText.textContent = 'Moderate';
+            } else if (primaryCig <= 3.0) {
+                badge.classList.add('bg-unhealthy-sens');
+                badgeText.textContent = 'Unhealthy (Sens)';
+            } else if (primaryCig <= 5.0) {
+                badge.classList.add('bg-unhealthy');
+                badgeText.textContent = 'Unhealthy';
+            } else {
+                badge.classList.add('bg-hazardous');
+                badgeText.textContent = 'Hazardous';
+            }
         }
 
         // Cumulative Exposures Calculations
@@ -927,34 +1131,160 @@ document.addEventListener('DOMContentLoaded', () => {
         const histWorstDayDate = document.getElementById('hist-worst-day-date');
 
         if (histAnnualAvgVal && histAnnualPmVal && histWorstDayVal && histWorstDayDate) {
+            const annualPm = data.annual_avg_pm2_5 !== undefined ? data.annual_avg_pm2_5 : 0;
+            const annualAqi = data.annual_avg_us_aqi !== undefined ? data.annual_avg_us_aqi : 0;
+            const worstDayPm = data.worst_day_pm2_5 !== undefined ? data.worst_day_pm2_5 : 0;
+            const worstDayAqi = data.worst_day_us_aqi !== undefined ? data.worst_day_us_aqi : 0;
+
             if (data.annual_avg_pm2_5 !== undefined) {
-                const annualCig = data.annual_avg_pm2_5 / BERKELEY_EARTH_PM25_FACTOR;
+                const annualCig = getCigValue(annualPm, annualAqi);
                 histAnnualAvgVal.textContent = `${annualCig.toFixed(1)} cig`;
-                histAnnualPmVal.textContent = `${Math.round(data.annual_avg_pm2_5)} μg/m³ PM2.5`;
                 
-                const worstDayCig = data.worst_day_pm2_5 / BERKELEY_EARTH_PM25_FACTOR;
+                if (state.calculationBase === 'aqi') {
+                    histAnnualPmVal.textContent = `Avg AQI: ${Math.round(annualAqi)}`;
+                } else {
+                    histAnnualPmVal.textContent = `${Math.round(annualPm)} μg/m³ PM2.5`;
+                }
+                
+                const worstDayCig = getCigValue(worstDayPm, worstDayAqi);
                 histWorstDayVal.textContent = `${worstDayCig.toFixed(1)} cig`;
                 
                 let formattedWorstDate = '--';
-                if (data.worst_day_date) {
+                const activeWorstDate = state.calculationBase === 'aqi' ? data.worst_day_aqi_date : data.worst_day_date;
+                if (activeWorstDate) {
                     try {
-                        const dateObj = new Date(data.worst_day_date);
+                        const dateObj = new Date(activeWorstDate);
                         formattedWorstDate = dateObj.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
                     } catch (e) {
-                        formattedWorstDate = data.worst_day_date;
+                        formattedWorstDate = activeWorstDate;
                     }
                 }
                 histWorstDayDate.textContent = `on ${formattedWorstDate}`;
             } else {
                 histAnnualAvgVal.textContent = 'Loading...';
-                histAnnualPmVal.textContent = '-- μg/m³ PM2.5';
+                histAnnualPmVal.textContent = '--';
                 histWorstDayVal.textContent = 'Loading...';
                 histWorstDayDate.textContent = '--';
             }
         }
 
+        // Render Pollutants Breakdown Grid
+        renderPollutantBreakdown(data);
+
         // Render Dynamic Forecast Chart
         renderForecastSVGChart(data);
+    }
+
+    // --- Render Pollutant Breakdown Grid Helper ---
+    function renderPollutantBreakdown(data) {
+        const grid = document.getElementById('pollutant-breakdown-grid');
+        if (!grid) return;
+        grid.innerHTML = '';
+
+        // If we don't have the new pollutant metrics, show a fallback message
+        if (data.current_pm10 === undefined) {
+            grid.innerHTML = `<div style="grid-column: span 2; text-align: center; padding: 12px; color: var(--text-subtle); font-size: 0.85rem;">Pollutant breakdown details not cached. Click map to reload.</div>`;
+            return;
+        }
+
+        const pollutants = [
+            {
+                formula: 'PM<sub>2.5</sub>',
+                name: 'Fine Particles',
+                val: data.current_pm2_5,
+                unit: 'μg/m³',
+                aqi: data.current_aqi_pm2_5
+            },
+            {
+                formula: 'PM<sub>10</sub>',
+                name: 'Coarse Particles',
+                val: data.current_pm10,
+                unit: 'μg/m³',
+                aqi: data.current_aqi_pm10
+            },
+            {
+                formula: 'O<sub>3</sub>',
+                name: 'Ozone',
+                val: data.current_ozone,
+                unit: 'μg/m³',
+                aqi: data.current_aqi_ozone
+            },
+            {
+                formula: 'CO',
+                name: 'Carbon Monoxide',
+                val: data.current_carbon_monoxide,
+                unit: 'μg/m³',
+                aqi: data.current_aqi_carbon_monoxide
+            },
+            {
+                formula: 'NO<sub>2</sub>',
+                name: 'Nitrogen Dioxide',
+                val: data.current_nitrogen_dioxide,
+                unit: 'μg/m³',
+                aqi: data.current_aqi_nitrogen_dioxide
+            },
+            {
+                formula: 'SO<sub>2</sub>',
+                name: 'Sulphur Dioxide',
+                val: data.current_sulphur_dioxide,
+                unit: 'μg/m³',
+                aqi: data.current_aqi_sulphur_dioxide
+            }
+        ];
+
+        // Find dominant pollutant (highest AQI value)
+        let dominantIndex = -1;
+        let maxAqi = -1;
+        pollutants.forEach((p, idx) => {
+            if (p.aqi !== undefined && p.aqi > maxAqi) {
+                maxAqi = p.aqi;
+                dominantIndex = idx;
+            }
+        });
+
+        pollutants.forEach((p, idx) => {
+            if (p.val === undefined || p.val === null) return;
+
+            const card = document.createElement('div');
+            card.className = 'pollutant-card';
+            
+            const isDominant = idx === dominantIndex && maxAqi > 0;
+            if (isDominant) {
+                card.classList.add('dominant');
+            }
+
+            const cat = getAqiCategory(p.aqi || 0);
+            
+            let displayVal = p.val;
+            let displayUnit = p.unit;
+            if (p.formula === 'CO') {
+                if (p.val > 100) {
+                    displayVal = (p.val / 1000).toFixed(2);
+                    displayUnit = 'mg/m³';
+                } else {
+                    displayVal = Math.round(p.val);
+                    displayUnit = 'μg/m³';
+                }
+            } else {
+                displayVal = Math.round(p.val);
+            }
+
+            card.innerHTML = `
+                <div class="pollutant-header">
+                    <span class="pollutant-formula">${p.formula}</span>
+                    <span class="pollutant-name">${p.name}</span>
+                    ${isDominant ? '<span class="dominant-label">Dominant</span>' : ''}
+                </div>
+                <div class="pollutant-value-row">
+                    <span class="pollutant-concentration">${displayVal} <span style="font-size:0.75rem; font-weight:500; color:var(--text-muted)">${displayUnit}</span></span>
+                    <span class="pollutant-aqi-badge ${cat.class}">AQI ${Math.round(p.aqi || 0)}</span>
+                </div>
+                <div class="pollutant-bar-bg">
+                    <div class="pollutant-bar-fill" style="width: ${Math.min(100, ((p.aqi || 0) / 300) * 100)}%; background-color: var(--${cat.class.replace('bg-', 'color-')})"></div>
+                </div>
+            `;
+            grid.appendChild(card);
+        });
     }
 
     function getEquivalenceText(cigs, pm25) {
@@ -976,12 +1306,22 @@ document.addEventListener('DOMContentLoaded', () => {
         const svg = document.getElementById('forecast-chart');
         svg.innerHTML = ''; // Clear previous
 
-        if (!data.hourly_pm25 || data.hourly_pm25.length === 0) {
+        const isAqi = state.calculationBase === 'aqi';
+        const hasAqiData = data.hourly_us_aqi && data.hourly_us_aqi.length > 0;
+        const hasPmData = data.hourly_pm25 && data.hourly_pm25.length > 0;
+
+        if ((isAqi && !hasAqiData) || (!isAqi && !hasPmData)) {
             svg.innerHTML = `<text x="50%" y="50%" text-anchor="middle" fill="var(--text-subtle)" font-size="12">No forecast available</text>`;
             return;
         }
 
-        const hourlyCigs = data.hourly_pm25.map(pm => pm / BERKELEY_EARTH_PM25_FACTOR);
+        let hourlyCigs;
+        if (isAqi) {
+            hourlyCigs = data.hourly_us_aqi.map(aqi => getPm25FromAqi(aqi) / BERKELEY_EARTH_PM25_FACTOR);
+        } else {
+            hourlyCigs = data.hourly_pm25.map(pm => pm / BERKELEY_EARTH_PM25_FACTOR);
+        }
+
         const maxVal = Math.max(...hourlyCigs);
         const chartHeight = 110;
         const chartWidth = 500;
@@ -1135,10 +1475,15 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const isForecastValid = (Date.now() - cachedItem.timestamp) < state.cacheTTL;
         
-        // If in historical mode, we also require historical data to be present
+        // If in historical mode, we require the historical data corresponding to the selected calculation base
         if (state.selectedMode === 'annual' || state.selectedMode === 'worst_day') {
-            const hasHistory = cachedItem.data.annual_avg_pm2_5 !== undefined && cachedItem.data.worst_day_pm2_5 !== undefined;
-            return isForecastValid && hasHistory;
+            if (state.calculationBase === 'aqi') {
+                const hasAqiHistory = cachedItem.data.annual_avg_us_aqi !== undefined && cachedItem.data.worst_day_us_aqi !== undefined;
+                return isForecastValid && hasAqiHistory;
+            } else {
+                const hasPmHistory = cachedItem.data.annual_avg_pm2_5 !== undefined && cachedItem.data.worst_day_pm2_5 !== undefined;
+                return isForecastValid && hasPmHistory;
+            }
         }
         
         return isForecastValid;
