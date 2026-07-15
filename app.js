@@ -15,7 +15,8 @@ document.addEventListener('DOMContentLoaded', () => {
         debouncedFetchTimeout: null,
         currentHighlight: null, // Highlighted selected cell rectangle
         userCoords: null,       // User's physical location
-        rateLimitModalActive: false // Track if rate limit warning modal is active
+        rateLimitModalActive: false, // Track if rate limit warning modal is active
+        globalCache: null      // Loaded global cache data (lat_lng => data)
     };
 
     // --- Configuration Constants ---
@@ -80,6 +81,9 @@ document.addEventListener('DOMContentLoaded', () => {
     function init() {
         // Initialize Lucide Icons
         lucide.createIcons();
+
+        // Load Global Cache
+        loadGlobalCache();
 
         // Load Cache from LocalStorage
         try {
@@ -504,7 +508,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (zoom >= 9)  return 0.04;  // ~4km
         if (zoom >= 7)  return 0.1;   // ~10km
         if (zoom >= 5)  return 0.3;   // ~30km
-        return 0; // Disabled at very low zooms
+        if (zoom >= 3)  return 1.5;   // ~150km (low zooms 3 and 4)
+        return 0; // Disabled at very low zooms (< 3)
     }
 
     async function updateGrid() {
@@ -545,6 +550,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Collect all viewport cell center coordinates
         const viewportKeys = new Set();
         const queueToFetch = [];
+        const isLowZoom = zoom <= 10;
 
         for (let lat = minLat; lat < maxLat; lat += cellSize) {
             for (let lng = minLng; lng < maxLng; lng += cellSize) {
@@ -558,9 +564,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 const latCenter = parseFloat((cellLat + cellSize / 2).toFixed(5));
                 const lngCenter = parseFloat((cellLng + cellSize / 2).toFixed(5));
 
-                // If not in cache or cached expired, push to download queue
-                if (!isCacheValid(key)) {
-                    queueToFetch.push({ key, lat: latCenter, lng: lngCenter });
+                if (isLowZoom) {
+                    if (!state.cache[key]) {
+                        const globalData = lookupGlobalCache(latCenter, lngCenter);
+                        if (globalData) {
+                            state.cache[key] = {
+                                timestamp: Date.now(),
+                                data: globalData
+                            };
+                        }
+                    }
+                } else {
+                    // If not in cache or cached expired, push to download queue
+                    if (!isCacheValid(key)) {
+                        queueToFetch.push({ key, lat: latCenter, lng: lngCenter });
+                    }
                 }
             }
         }
@@ -1265,7 +1283,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // If we don't have the new pollutant metrics, show a fallback message
         if (data.current_pm10 === undefined) {
-            grid.innerHTML = `<div style="grid-column: span 2; text-align: center; padding: 12px; color: var(--text-subtle); font-size: 0.85rem;">Pollutant breakdown details not cached. Click map to reload.</div>`;
+            grid.innerHTML = `<div style="grid-column: span 2; text-align: center; padding: 12px; color: var(--text-subtle); font-size: 0.85rem;">Zoom in to view detailed 48-hour forecast and pollutant breakdown.</div>`;
             return;
         }
 
@@ -1584,6 +1602,68 @@ document.addEventListener('DOMContentLoaded', () => {
                 delete state.cache[key];
             }
         });
+    }
+
+    async function loadGlobalCache() {
+        try {
+            const response = await fetch('global-cache.json');
+            if (!response.ok) throw new Error('Failed to load global-cache.json');
+            const data = await response.json();
+            
+            // Convert array-of-arrays to lat_lng mapped object for fast O(1) lookup
+            state.globalCache = {};
+            data.forEach(row => {
+                const [
+                    lat, lng, 
+                    current_pm2_5, current_us_aqi, 
+                    worst_pm2_5, worst_us_aqi, 
+                    annual_avg_pm2_5, annual_avg_us_aqi, 
+                    worst_day_pm2_5, worst_day_us_aqi, 
+                    worst_day_date, worst_day_aqi_date
+                ] = row;
+                
+                const key = `${lat}_${lng}`;
+                state.globalCache[key] = {
+                    current_pm2_5,
+                    current_us_aqi,
+                    worst_pm2_5,
+                    worst_us_aqi,
+                    annual_avg_pm2_5,
+                    annual_avg_us_aqi,
+                    worst_day_pm2_5,
+                    worst_day_us_aqi,
+                    worst_day_date,
+                    worst_day_aqi_date
+                };
+            });
+            console.log(`Global cache loaded successfully: ${Object.keys(state.globalCache).length} coordinates.`);
+            updateGrid();
+        } catch (e) {
+            console.error('Failed to load global air quality cache:', e);
+        }
+    }
+
+    function lookupGlobalCache(lat, lng) {
+        if (!state.globalCache) return null;
+        
+        const GRID_SIZE = 4.0;
+        
+        // Find nearest grid point
+        let nearestLat = Math.round(lat / GRID_SIZE) * GRID_SIZE;
+        let nearestLng = Math.round(lng / GRID_SIZE) * GRID_SIZE;
+        
+        // Clamp and wrap coordinates
+        nearestLat = Math.max(-60, Math.min(76, nearestLat));
+        
+        if (nearestLng > 180) nearestLng -= 360;
+        if (nearestLng < -180) nearestLng += 360;
+        
+        // Fix rounding issues for key lookup
+        nearestLat = parseFloat(nearestLat.toFixed(2));
+        nearestLng = parseFloat(nearestLng.toFixed(2));
+        
+        const key = `${nearestLat}_${nearestLng}`;
+        return state.globalCache[key] || null;
     }
 
     function showRateLimitModal() {

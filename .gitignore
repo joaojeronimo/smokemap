@@ -18,3 +18,7 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
+
+# Helper scripts
+generate_global_cache.js
+
